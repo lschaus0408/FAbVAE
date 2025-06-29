@@ -8,6 +8,8 @@ models of FAbVAE. In this file you can find:
     - ByteNet Block
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as Functionals
@@ -85,3 +87,44 @@ class ByteNetBlock(nn.Module):
         a given configuration of ByteNet.
         """
         return 1 + 2 * (self.kernel_size - 1) * self.dilation
+
+
+class PositionalEmbedding(nn.Module):
+    """
+    ## Positional Embedding
+    Uses sinusoidal positional encoding scheme.
+
+    ### Arguments:
+        \t- sequence_length {int} -- Maximum sequence length at run-time
+        \t- dimensions {int} -- Feature dimensions of the tensor the embedding
+                                will be added to.
+    """
+
+    def __init__(self, sequence_length: int, dimensions: int, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Pre-compute the sin/cos values
+        position = torch.arange(sequence_length).unsqueeze(1)
+        divisor_term = torch.exp(
+            torch.arange(0, dimensions, 2, dtype=torch.float32)
+            * -(math.log(10_000.0) / dimensions)
+        )
+
+        positional_embedding = torch.zeros(sequence_length, dimensions)
+        # Even indices (sin)
+        positional_embedding[:, 0::2] = torch.sin(position * divisor_term)
+        # Odd indices (cos)
+        positional_embedding[:, 1::2] = torch.cos(position * divisor_term)
+
+        # Register tensor
+        self.positional_embedding: torch.Tensor
+        self.register_buffer("positional_embedding", positional_embedding)
+
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        ## Forward pass to include positional embeddings
+        """
+        # Unsqueeze to broadcast over batch
+        return input_tensor + self.positional_embedding[
+            : input_tensor.size(1), :
+        ].unsqueeze(0)
