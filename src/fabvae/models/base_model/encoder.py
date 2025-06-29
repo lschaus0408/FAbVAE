@@ -123,9 +123,6 @@ class AbVAEEncoder(nn.Module):
         self.layers_mu = nn.Linear(flattened_dimension, latent_dim)
         self.layers_logvar = nn.Linear(flattened_dimension, latent_dim)
 
-    # ============================================================
-    # forward helpers
-    # ============================================================
     @staticmethod
     def _reparameterise(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """
