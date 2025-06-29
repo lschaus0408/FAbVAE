@@ -20,7 +20,7 @@ import math
 import torch
 import torch.nn as nn
 
-from fabvae.modules.blocks import ByteNetBlock
+from fabvae.modules.blocks import ByteNetBlock, PositionalEmbedding
 
 
 class AbVAEEncoder(nn.Module):
@@ -38,6 +38,7 @@ class AbVAEEncoder(nn.Module):
         channel_growth_factor: int = 2,
         use_bottleneck: bool = False,
         bytenet_gated: bool = False,
+        positional_embedding: bool = True,
     ) -> None:
         super().__init__()
 
@@ -48,7 +49,14 @@ class AbVAEEncoder(nn.Module):
 
         # 1d conv to move from one‑hot into feature space
         self.input_projection = nn.Conv1d(in_channels, base_channels, kernel_size=1)
-        # CONSIDER POSITIONAL EMBEDDING
+
+        # Positional Embedding
+        if positional_embedding:
+            self.pos_embed = PositionalEmbedding(
+                sequence_length=sequence_length, dimensions=in_channels
+            )
+        else:
+            self.pos_embed = nn.Identity()
 
         # ByteNet Layers
         dilations = [2**i for i in range(num_bytenet_layers)]
@@ -139,6 +147,9 @@ class AbVAEEncoder(nn.Module):
         assert (
             sequence_length == self.sequence_length
         ), f"expected sequence length {self.sequence_length}, got {sequence_length}"
+
+        # Set positional embedding
+        input_tensor = self.pos_embed(input_tensor)
 
         # Project tensor to (B, C, L) for Input Conv1d
         input_tensor = input_tensor.transpose(1, 2)
