@@ -115,7 +115,7 @@ class AbVAEBase(nn.Module):
         input_embedding: torch.Tensor,
         position_weights: Optional[torch.Tensor] = None,
         eps: float = 1e-8,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         ## Compute the Evidence Lower BOund (ELBO)
         Weigths reconstruction based on position_weights. Epsilon is there
