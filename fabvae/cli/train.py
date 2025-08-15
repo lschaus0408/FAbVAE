@@ -24,8 +24,8 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.multiprocessing.spawn import spawn as torchmp_spawn
 
 
-from src.fabvae.models.base_model.vae import AbVAEBase
-from src.fabvae.data.load_sequences import MockDataLoader
+from fabvae.models.base_model.vae import AbVAEBase
+from fabvae.data.load_sequences import MockDataLoader
 
 ### --------------------------------------------------------###
 #                       Training Utils                        #
