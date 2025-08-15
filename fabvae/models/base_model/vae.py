@@ -51,7 +51,7 @@ class AbVAEBase(nn.Module):
         decoder_kwargs = decoder_kwargs or {}
 
         self.encoder = AbVAEEncoder(
-            seq_len=sequence_length,
+            sequence_length=sequence_length,
             in_channels=in_channels,
             base_channels=base_channels,
             latent_dim=latent_dim,
@@ -59,7 +59,7 @@ class AbVAEBase(nn.Module):
         )
 
         self.decoder = AbVAEDecoder(
-            seq_len=sequence_length,
+            sequence_length=sequence_length,
             out_channels=in_channels,
             latent_dim=latent_dim,
             base_channels=base_channels,
