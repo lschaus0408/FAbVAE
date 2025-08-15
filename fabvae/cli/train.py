@@ -270,7 +270,7 @@ def worker(rank: int, world_size: int, args):
             sampler=train_sampler,
             shuffle=train_sampler is None,
             num_workers=4,
-            pin_memory=False,
+            pin_memory=True,
         )
         val_loader = DataLoader(
             val_ds,
@@ -278,7 +278,7 @@ def worker(rank: int, world_size: int, args):
             sampler=val_sampler,
             shuffle=False,
             num_workers=4,
-            pin_memory=False,
+            pin_memory=True,
         )
 
         # Load Model and cast to device
