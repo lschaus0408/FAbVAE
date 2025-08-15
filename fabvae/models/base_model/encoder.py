@@ -38,7 +38,7 @@ class AbVAEEncoder(nn.Module):
         channel_growth_factor: int = 2,
         use_bottleneck: bool = False,
         bytenet_gated: bool = False,
-        positional_embedding: bool = True,
+        positional_embedding: bool = False,
     ) -> None:
         super().__init__()
 
