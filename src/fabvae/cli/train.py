@@ -21,6 +21,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
+from torch.multiprocessing.spawn import spawn as torchmp_spawn
 
 
 from src.fabvae.models.base_model.vae import AbVAEBase
@@ -232,7 +233,7 @@ def main() -> None:
     # Start workers
     world_size = args.gpus
     if world_size > 1:
-        torch.multiprocessing.spawn(worker, args=(world_size, args), nprocs=world_size)
+        torchmp_spawn(worker, args=(world_size, args), nprocs=world_size)
     else:
         worker(0, world_size, args)
 
@@ -269,7 +270,7 @@ def worker(rank: int, world_size: int, args):
             sampler=train_sampler,
             shuffle=train_sampler is None,
             num_workers=4,
-            pin_memory=True,
+            pin_memory=False,
         )
         val_loader = DataLoader(
             val_ds,
@@ -277,7 +278,7 @@ def worker(rank: int, world_size: int, args):
             sampler=val_sampler,
             shuffle=False,
             num_workers=4,
-            pin_memory=True,
+            pin_memory=False,
         )
 
         # Load Model and cast to device
@@ -340,8 +341,8 @@ def worker(rank: int, world_size: int, args):
             if rank == 0:
                 lr = optimizer.param_groups[0]["lr"]
                 print(
-                    f"Ep {epoch:03d} | LR {lr:.2e} | β {validation_beta:.3f} | tr {training_loss:.3f} \
-                        | val {validation_loss:.3f}"
+                    f"Ep {epoch:03d} | LR {lr:.2e} | β {validation_beta:.3f} \
+                    | tr {training_loss:.3f} | val {validation_loss:.3f}"
                 )
                 if writer:
                     writer.add_scalars(
@@ -407,6 +408,13 @@ class Scheduler(ABC):
         Defines what to do at each scheduler step
         """
 
+    @abstractmethod
+    def load_state_dict(self, state: dict[str, Any]):
+        """
+        ## Load the scheduler's state.
+        Ported from Pytorch lr_scheduler.py
+        """
+
 
 class KLTargetScheduler(Scheduler):
     """
@@ -441,7 +449,7 @@ class KLTargetScheduler(Scheduler):
         self.patience_ramp = patience_ramp
         self.eps = eps
 
-        self.best_reconstruction_loss: Optional[float] = None
+        self.best_reconstruction_loss: float = float("inf")
         self.no_improvement: int = 0
         self.current_phase: Literal["warmup", "plateau", "ramp", "max"] = "warmup"
 
@@ -542,3 +550,7 @@ class KLTargetScheduler(Scheduler):
         self.no_improvement = state["no_improve"]
         self.current_phase = state["phase"]
         self.model.kl_target = state["kl_target"]
+
+
+if __name__ == "__main__":
+    main()
