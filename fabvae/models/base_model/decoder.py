@@ -51,7 +51,7 @@ class AbVAEDecoder(nn.Module):
             "gelu",
             "relu",
         }, "activation must be 'gelu' or 'relu'"
-        self.seq_len = sequence_length
+        self.sequence_length = sequence_length
         self.latent_dim = latent_dim
         self.out_channels = out_channels
         self.base_channels = base_channels
@@ -119,6 +119,15 @@ class AbVAEDecoder(nn.Module):
         # Projection to sequence shape
         self.sequence_projection = nn.Conv1d(channels_in, out_channels, kernel_size=1)
 
+        # Final pool and convolution
+        self.pool = nn.AdaptiveAvgPool1d(self.sequence_length)
+        self.final_conv = nn.Conv1d(
+            in_channels=self.base_channels,
+            out_channels=self.base_channels,
+            kernel_size=3,
+            padding=1,
+        )
+
     # ------------------------------------------------------------------
     def forward(self, latent_vector: torch.Tensor) -> torch.Tensor:
         """
@@ -126,11 +135,14 @@ class AbVAEDecoder(nn.Module):
         """
         batch_size = latent_vector.size(0)
         # Increase latent dimension to prepare for reshape (B, channels_initial * features)
-        up_tensor = self.dense_layers(latent_vector)
+        up_tensor: torch.Tensor = self.dense_layers(latent_vector)
         # Reshape to (B, channels_initial, features)
         up_tensor = up_tensor.view(batch_size, self.channels_in, self.features)
         # Upsample to (B, channels_final, sequence_length)
         up_tensor = self.up_layers(up_tensor)
+        # Final Convolution
+        up_tensor = self.pool(up_tensor)
+        up_tensor = self.final_conv(up_tensor)
         # Project to (B, 21, sequence_length)
         logits: torch.Tensor = self.sequence_projection(up_tensor)  # (B, 21, L)
         # Project to output shape (B, sequence_length, 21)
