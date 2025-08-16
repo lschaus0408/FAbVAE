@@ -45,14 +45,20 @@ class ByteNetBlock(nn.Module):
         self.gated = gated
 
         conv_out = 2 * channels if gated else channels
-        self.conv = nn.Conv1d(
+        self.conv_dilated = nn.Conv1d(
             in_channels=channels,
             out_channels=conv_out,
             kernel_size=kernel_size,
             dilation=dilation,
             padding=0,
         )
-
+        self.conv_normal = nn.Conv1d(
+            in_channels=channels,
+            out_channels=conv_out,
+            kernel_size=1,
+            dilation=1,
+            padding=0,
+        )
         self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(channels)
 
@@ -62,10 +68,31 @@ class ByteNetBlock(nn.Module):
         """
         # Input shape: (B = batch_size, L = sequence_length, C = channels_in)
         residual = input_tensor
-        # Project tensor to (B, C, L) for Conv1d
-        input_tensor = input_tensor.transpose(1, 2)
-        input_tensor = self.conv(input_tensor)
 
+        ### Normal Convolution Sub-Block ###
+        input_tensor = self.one_by_one_convolution_block(input_tensor)
+        # Project tensor to (B, L, C) for norm across channels
+        input_tensor = input_tensor.transpose(1, 2)
+
+        ### High Dilation Convolution Sub-Block ###
+        input_tensor = self.high_dilation_convolution_block(input_tensor)
+        # Project tensor to (B, L, C) for norm across channels
+        input_tensor = input_tensor.transpose(1, 2)
+
+        ### Normal Convolution Sub-Block ###
+        input_tensor = self.one_by_one_convolution_block(input_tensor)
+        # Project tensor to (B, L, C) for residual addition
+        input_tensor = input_tensor.transpose(1, 2)
+
+        input_tensor = self.dropout(input_tensor)
+
+        return input_tensor + residual
+
+    def one_by_one_convolution_block(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        ## Performs the 1x1 convolution block of ByteNet
+        """
+        input_tensor = self.norm(input_tensor)
         # By default we want GeLU but keep the option open for RNN-like gating
         if self.gated:
             v, g = input_tensor.chunk(2, dim=1)
@@ -74,11 +101,35 @@ class ByteNetBlock(nn.Module):
             input_tensor = Functionals.gelu(  # pylint: disable=not-callable
                 input_tensor
             )
-
-        input_tensor = self.dropout(input_tensor)
-        # Project tensor to (B, L, C) for residual addition
+        # Project tensor to (B, C, L) for Conv1d
         input_tensor = input_tensor.transpose(1, 2)
-        return self.norm(input_tensor + residual)
+        input_tensor = self.conv_normal(input_tensor)
+        return input_tensor
+
+    def high_dilation_convolution_block(
+        self, input_tensor: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        ## Performs high-dilation block of ByteNet
+        """
+        input_tensor = self.norm(input_tensor)
+        # By default we want GeLU but keep the option open for RNN-like gating
+        if self.gated:
+            v, g = input_tensor.chunk(2, dim=1)
+            input_tensor = torch.tanh(v) * torch.sigmoid(g)
+        else:
+            input_tensor = Functionals.gelu(  # pylint: disable=not-callable
+                input_tensor
+            )
+        # Project tensor to (B, C, L) for Conv1d
+        input_tensor = input_tensor.transpose(1, 2)
+        input_tensor = self.conv_dilated(input_tensor)
+
+        # Pad to preserve shape
+        pad_total = (self.kernel_size - 1) * self.dilation
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        return Functionals.pad(input_tensor, (pad_left, pad_right))
 
     def receptive_field(self) -> int:
         """
