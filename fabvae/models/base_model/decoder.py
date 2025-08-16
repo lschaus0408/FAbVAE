@@ -37,13 +37,13 @@ class AbVAEDecoder(nn.Module):
         sequence_length: int = 150,
         out_channels: int = 21,
         latent_dim: int = 32,
-        base_channels: int = 256,
+        base_channels: int = 64,
         channel_growth_factor: int = 2,
-        num_bytenet_layers: int = 2,
+        num_bytenet_layers: int = 1,
         activation: str = "gelu",
         bytenet_gated: bool = False,
         bytenet_dropout: float = 0.1,
-        bytenet_dilation: int = 5,
+        bytenet_dilation_base: int = 1,
         return_logits: bool = False,
     ) -> None:
         super().__init__()
@@ -70,7 +70,7 @@ class AbVAEDecoder(nn.Module):
         self.features = features
 
         # Get number of upsample steps needed
-        n_upsample = int(math.log2(sequence_length // features))
+        n_upsample = math.ceil(math.log2(sequence_length / features))
         self.n_upsample = n_upsample
 
         channels_initial = base_channels * (channel_growth_factor**n_upsample)
@@ -84,6 +84,7 @@ class AbVAEDecoder(nn.Module):
         # Upsampling with stride-2
         upblocks = []
         channels_in = channels_initial
+        step_bytenet_dilation = bytenet_dilation_base - 1
         for _ in range(n_upsample):
             channels_out = channels_in // channel_growth_factor
             # Upsample length ×2 and halve channels
@@ -98,15 +99,20 @@ class AbVAEDecoder(nn.Module):
             )
             upblocks.append(activation_function)
             # optional ByteNet refinement blocks at current resolution
-            for _ in range(num_bytenet_layers):
-                upblocks.append(
-                    ByteNetBlock(
-                        channels=channels_out,
-                        dilation=bytenet_dilation,
-                        dropout=bytenet_dropout,
-                        gated=bytenet_gated,
+            if num_bytenet_layers:
+                step_bytenet_dilation += 1
+                step_bytenet_dilation = min(step_bytenet_dilation, 5)
+                for _ in range(num_bytenet_layers):
+                    upblocks.append(TransposeTensor())
+                    upblocks.append(
+                        ByteNetBlock(
+                            channels=channels_out,
+                            dilation=step_bytenet_dilation,
+                            dropout=bytenet_dropout,
+                            gated=bytenet_gated,
+                        )
                     )
-                )
+                    upblocks.append(TransposeTensor())
             channels_in = channels_out
         self.up_layers = nn.Sequential(*upblocks)
 
@@ -129,8 +135,21 @@ class AbVAEDecoder(nn.Module):
         logits: torch.Tensor = self.sequence_projection(up_tensor)  # (B, 21, L)
         # Project to output shape (B, sequence_length, 21)
         logits = logits.transpose(1, 2)
-
         # Return output
         if self.return_logits:
             return logits
         return Functionals.softmax(logits, dim=-1)
+
+
+class TransposeTensor(torch.nn.Module):
+    """
+    ## Transposes a Tensor
+    Used to do the [B, L, C] <-> [B, C, L] transpositions.
+    It was necessary to put this in a module to use in nn.Sequential
+    """
+
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        ## Transpose defined as a torch module
+        """
+        return input_tensor.transpose(1, 2)
