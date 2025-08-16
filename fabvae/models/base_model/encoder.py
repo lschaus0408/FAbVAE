@@ -39,6 +39,7 @@ class AbVAEEncoder(nn.Module):
         use_bottleneck: bool = False,
         bytenet_gated: bool = False,
         positional_embedding: bool = False,
+        static_dilation: bool = True,
     ) -> None:
         super().__init__()
 
@@ -59,7 +60,10 @@ class AbVAEEncoder(nn.Module):
             self.pos_embed = nn.Identity()
 
         # ByteNet Layers
-        dilations = [2**i for i in range(num_bytenet_layers)]
+        if static_dilation:
+            dilations = [5 for _ in range(num_bytenet_layers)]
+        else:
+            dilations = [2**i for i in range(num_bytenet_layers)]
         self.bytenet = nn.ModuleList(
             [
                 ByteNetBlock(
@@ -114,7 +118,7 @@ class AbVAEEncoder(nn.Module):
             current_latent_dimension = math.ceil(current_latent_dimension / 2)
             channel_in = channel_out
         self.down_block = nn.Sequential(*down_layers)
-        self.final_len = current_latent_dimension
+        self.final_len = current_latent_dimension - 1
         self.final_channels = channel_in
         self.n_down_layers = len(down_layers)
 
