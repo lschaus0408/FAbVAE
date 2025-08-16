@@ -34,7 +34,7 @@ class AbVAEBase(nn.Module):
         sequence_length: int = 150,
         in_channels: int = 21,
         latent_dim: int = 32,
-        base_channels: int = 128,
+        base_channels: int = 64,
         # PID / KL control (ADJUST BASE-PARAMS)
         kl_target: float = 1.0,
         beta_init: float = 0.0,
