@@ -58,7 +58,7 @@ class MockDataLoader(BaseDataLoader):
     def __init__(
         self,
         n_sequences: int = 1024,
-        sequence_length: int = 140,
+        sequence_length: int = 150,
         features_length: int = 21,
         dtype: Literal["float", "int", "bool"] = "bool",
     ):
@@ -173,4 +173,4 @@ class ProteinEmbeddingLoader(Dataset):
         return self.tensors.size(0)
 
     def __getitem__(self, idx):
-        self.tensors[idx]
+        self.tensors[idx]  # pylint: disable=pointless-statement
