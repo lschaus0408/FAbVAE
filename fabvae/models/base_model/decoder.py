@@ -43,18 +43,21 @@ class AbVAEDecoder(nn.Module):
         activation: str = "gelu",
         bytenet_gated: bool = False,
         bytenet_dropout: float = 0.1,
-        bytenet_dilation: int = 1,
+        bytenet_dilation: int = 5,
         return_logits: bool = False,
     ) -> None:
         super().__init__()
-        assert activation in {"gelu", "relu"}, "activation must be 'gelu' or 'relu'"
+        assert activation in {
+            "gelu",
+            "relu",
+        }, "activation must be 'gelu' or 'relu'"
         self.seq_len = sequence_length
         self.latent_dim = latent_dim
         self.out_channels = out_channels
         self.base_channels = base_channels
         self.return_logits = return_logits
 
-        activation = nn.GELU() if activation == "gelu" else nn.ReLU()
+        activation_function = nn.GELU() if activation == "gelu" else nn.ReLU()
 
         # Calculate number of features
         features = 1
@@ -75,13 +78,12 @@ class AbVAEDecoder(nn.Module):
 
         self.dense_layers = nn.Sequential(
             nn.Linear(latent_dim, channels_initial * features),
-            activation,
+            activation_function,
         )
 
         # Upsampling with stride-2
         upblocks = []
         channels_in = channels_initial
-        hidden_features = features
         for _ in range(n_upsample):
             channels_out = channels_in // channel_growth_factor
             # Upsample length ×2 and halve channels
@@ -94,7 +96,7 @@ class AbVAEDecoder(nn.Module):
                     padding=1,
                 )
             )
-            upblocks.append(activation)
+            upblocks.append(activation_function)
             # optional ByteNet refinement blocks at current resolution
             for _ in range(num_bytenet_layers):
                 upblocks.append(
@@ -106,7 +108,6 @@ class AbVAEDecoder(nn.Module):
                     )
                 )
             channels_in = channels_out
-            hidden_features *= 2
         self.up_layers = nn.Sequential(*upblocks)
 
         # Projection to sequence shape
