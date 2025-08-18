@@ -74,11 +74,12 @@ class AbVAEDecoder(nn.Module):
         n_upsample = math.ceil(math.log2(sequence_length / features))
         self.n_upsample = n_upsample
 
+        # Get number of channels
         channels_initial = base_channels * (channel_growth_factor**n_upsample)
         self.channels_in = channels_initial
 
         self.dense_layers = nn.Sequential(
-            nn.Linear(latent_dim, channels_initial * features),
+            nn.Linear(latent_dim, channels_initial),
             activation_function,
         )
 
@@ -139,7 +140,7 @@ class AbVAEDecoder(nn.Module):
         # Increase latent dimension to prepare for reshape (B, channels_initial * features)
         up_tensor: torch.Tensor = self.dense_layers(latent_vector)
         # Reshape to (B, channels_initial, features)
-        up_tensor = up_tensor.view(batch_size, self.channels_in, self.features)
+        up_tensor = up_tensor.view(batch_size, self.channels_in, self.features // 2)
         # Upsample to (B, channels_final, sequence_length)
         up_tensor = self.up_layers(up_tensor)
         # Final Convolution
