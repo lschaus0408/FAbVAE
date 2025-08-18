@@ -39,11 +39,12 @@ class AbVAEDecoder(nn.Module):
         latent_dim: int = 32,
         base_channels: int = 64,
         channel_growth_factor: int = 2,
-        num_bytenet_layers: int = 1,
+        num_bytenet_layers_per_upblock: int = 1,
+        num_bytenet_layers_total: int = 2,
         activation: str = "gelu",
         bytenet_gated: bool = False,
         bytenet_dropout: float = 0.1,
-        bytenet_dilation_base: int = 1,
+        bytenet_dilation_base: int = 2,
         return_logits: bool = False,
     ) -> None:
         super().__init__()
@@ -85,7 +86,8 @@ class AbVAEDecoder(nn.Module):
         upblocks = []
         channels_in = channels_initial
         step_bytenet_dilation = bytenet_dilation_base - 1
-        for _ in range(n_upsample):
+        add_bytenet_iteration = n_upsample - num_bytenet_layers_total
+        for iteration in range(n_upsample):
             channels_out = channels_in // channel_growth_factor
             # Upsample length ×2 and halve channels
             upblocks.append(
@@ -99,10 +101,10 @@ class AbVAEDecoder(nn.Module):
             )
             upblocks.append(activation_function)
             # optional ByteNet refinement blocks at current resolution
-            if num_bytenet_layers:
+            if iteration >= add_bytenet_iteration:
                 step_bytenet_dilation += 1
                 step_bytenet_dilation = min(step_bytenet_dilation, 5)
-                for _ in range(num_bytenet_layers):
+                for _ in range(num_bytenet_layers_per_upblock):
                     upblocks.append(TransposeTensor())
                     upblocks.append(
                         ByteNetBlock(
