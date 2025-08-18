@@ -14,7 +14,7 @@ Model Overview:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Literal
 
 import torch
 import torch.nn as nn
@@ -82,6 +82,19 @@ class AbVAEBase(nn.Module):
         self.sequence_length = sequence_length
         self.in_channels = in_channels
         self.latent_dim = latent_dim
+
+    def __repr__(self) -> str:
+        """
+        ## String representation of AbVAEBase Model
+        """
+        model_size = self.model_size()
+        model_parameters = self.count_parameters()
+
+        intro = "--------- AbVAEBase Model ---------\n"
+        separator = "-----------------------------------\n"
+        params = f" Total Parameters: {model_parameters[0]} \n Encoder Parameters: {model_parameters[1]} \n Decoder Parameters: {model_parameters[2]} \n"
+        size = f" Model Size in GB: {model_size}"
+        return intro + separator + params + separator + size
 
     def forward(
         self,
@@ -164,3 +177,46 @@ class AbVAEBase(nn.Module):
 
         loss = reconstruction_loss + self.beta * kl_divergence_loss
         return loss, reconstruction_loss, kl_divergence_loss, self.beta.detach().clone()
+
+    def model_size(self, unit: Literal["kb", "mb", "gb", "tb"] = "gb") -> float:
+        """
+        ## Returns the model size in the unit given
+        """
+        unit_exponent = {"kb": 1, "mb": 2, "gb": 3, "tb": 4}
+        total_params = 0
+        for parameter in self.parameters():
+            total_params += parameter.numel() * parameter.element_size()
+        return total_params / (1024 ** unit_exponent[unit])
+
+    def count_parameters(self, trainable_only: bool = False) -> tuple[int, int, int]:
+        """
+        ## Returns the number of parameters
+        ### Arguments:
+            \ttrainable_only {bool} -- Default: False; Count all parameters or only trainable ones
+        """
+        if trainable_only:
+            total_params = sum(
+                parameter.numel()
+                for parameter in self.parameters()
+                if parameter.requires_grad
+            )
+            encoder_params = sum(
+                parameter.numel()
+                for parameter in self.encoder.parameters()
+                if parameter.requires_grad
+            )
+            decoder_params = sum(
+                parameter.numel()
+                for parameter in self.decoder.parameters()
+                if parameter.requires_grad
+            )
+        else:
+            total_params = sum(parameter.numel() for parameter in self.parameters())
+            encoder_params = sum(
+                parameter.numel() for parameter in self.encoder.parameters()
+            )
+            decoder_params = sum(
+                parameter.numel() for parameter in self.decoder.parameters()
+            )
+
+        return total_params, encoder_params, decoder_params
