@@ -125,6 +125,7 @@ def train_one_epoch(
     total_loss: float = 0.0
     total_recon: float = 0.0
     total_kl: float = 0.0
+    total_beta: float = 0.0
 
     for batch in loader:
         # Load params
@@ -299,6 +300,7 @@ def worker(rank: int, world_size: int, args: ArgsTypes):
 
         # Load Model and cast to device
         model = AbVAEBase().to(device)
+        print(model)
         if world_size > 1:
             model = DDP(model, device_ids=[rank])
 
