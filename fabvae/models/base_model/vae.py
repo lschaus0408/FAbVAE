@@ -20,6 +20,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as Functionals
 
+from torchsummary import summary
+
 # Local modules created in the canvas
 from fabvae.models.base_model.encoder import AbVAEEncoder
 from fabvae.models.base_model.decoder import AbVAEDecoder
@@ -34,7 +36,7 @@ class AbVAEBase(nn.Module):
         sequence_length: int = 150,
         in_channels: int = 21,
         latent_dim: int = 32,
-        base_channels: int = 128,
+        base_channels: int = 8,
         # PID / KL control (ADJUST BASE-PARAMS)
         kl_target: float = 1.0,
         beta_init: float = 0.0,
@@ -87,14 +89,16 @@ class AbVAEBase(nn.Module):
         """
         ## String representation of AbVAEBase Model
         """
-        model_size = self.model_size()
         model_parameters = self.count_parameters()
 
-        intro = "--------- AbVAEBase Model ---------\n"
-        separator = "-----------------------------------\n"
-        params = f" Total Parameters: {model_parameters[0]} \n Encoder Parameters: {model_parameters[1]} \n Decoder Parameters: {model_parameters[2]} \n"
-        size = f" Model Size in GB: {model_size}"
-        return intro + separator + params + separator + size
+        print(
+            "------------------------------------- AbVAEBase Model ------------------------------------\n"  # pylint: disable=line-too-long
+        )
+        summary(self, (self.sequence_length, self.in_channels))
+        print(
+            f" Total Parameters: {model_parameters[0]} \n Encoder Parameters: {model_parameters[1]} \n Decoder Parameters: {model_parameters[2]} \n"  # pylint: disable=line-too-long
+        )
+        return "\n"
 
     def forward(
         self,
