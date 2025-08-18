@@ -33,7 +33,7 @@ class AbVAEEncoder(nn.Module):
         in_channels: int = 21,
         base_channels: int = 256,
         latent_dim: int = 32,
-        num_bytenet_layers: int = 7,
+        num_bytenet_layers: int = 2,
         bytenet_dropout: float = 0.1,
         channel_growth_factor: int = 2,
         use_bottleneck: bool = False,
