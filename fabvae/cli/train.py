@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Tuple, Optional, Literal, Any, Generator
+from typing import Tuple, Optional, Literal, Any, Generator, cast
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 
@@ -207,6 +207,28 @@ def validate(
 ### --------------------------------------------------------###
 
 
+def training_parser() -> argparse.ArgumentParser:
+    """
+    ## CLI Parser for Training File
+    Used when training file is run independently from __main__
+    ### Argparse arguments:
+        \t --epochs (-e): Number of epochs \n
+        \t --batch_size (-b): Batch size for training\n
+        \t --gpus (-n): Number of GPUs to use \n
+        \t --lr (-r): Initial learning rate \n
+        \t --ckpt_dir (-c): Where checkpoints are saves \n
+        \t --log_dir (-l): Where to log data
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-e", "--epochs", type=int)
+    parser.add_argument("-b", "--batch_size", type=int)
+    parser.add_argument("-n", "--gpus", type=int, default=1, choices=[1, 2, 3, 4])
+    parser.add_argument("-r", "--lr", type=float, default=3e-4)
+    parser.add_argument("-c", "--ckpt_dir", type=Optional[str], default=None)
+    parser.add_argument("-l", "--log_dir", type=str, default="runs/vae")
+    return parser
+
+
 def main() -> None:
     """
     ## Main program for training
@@ -221,14 +243,8 @@ def main() -> None:
     """
 
     # Argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-e", "--epochs", type=int)
-    parser.add_argument("-b", "--batch_size", type=int)
-    parser.add_argument("-n", "--gpus", type=int, default=1, choices=[1, 2, 3, 4])
-    parser.add_argument("-r", "--lr", type=float, default=3e-4)
-    parser.add_argument("-c", "--ckpt_dir", type=Optional[str], default=None)
-    parser.add_argument("-l", "--log_dir", type=str, default="runs/vae")
-    args = parser.parse_args()
+    parser = training_parser()
+    args = cast(ArgsTypes, parser.parse_args())
 
     # Start workers
     world_size = args.gpus
@@ -238,7 +254,7 @@ def main() -> None:
         worker(0, world_size, args)
 
 
-def worker(rank: int, world_size: int, args):
+def worker(rank: int, world_size: int, args: ArgsTypes):
     """
     ## Single worker for training
     """
@@ -248,7 +264,7 @@ def worker(rank: int, world_size: int, args):
         device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
         # Data Loading
-        train_ds, val_ds = MockDataLoader(10_000), MockDataLoader(2_000)
+        train_ds, val_ds = MockDataLoader(80), MockDataLoader(10)
         train_sampler = (
             DistributedSampler(
                 train_ds, num_replicas=world_size, rank=rank, shuffle=True
@@ -550,6 +566,24 @@ class KLTargetScheduler(Scheduler):
         self.no_improvement = state["no_improve"]
         self.current_phase = state["phase"]
         self.model.kl_target = state["kl_target"]
+
+
+### --------------------------------------------------------###
+#                           Types                             #
+### --------------------------------------------------------###
+
+
+class ArgsTypes(argparse.Namespace):
+    """
+    ## Argparse type definitions
+    """
+
+    epochs: int
+    batch_size: int
+    gpus: int
+    lr: float
+    ckpt_dir: str
+    log_dir: str
 
 
 if __name__ == "__main__":
