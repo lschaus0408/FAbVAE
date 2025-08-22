@@ -10,9 +10,14 @@ models of FAbVAE. In this file you can find:
 
 import math
 
+from typing import Literal, TypeAlias
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as Functionals
+
+ActivationType: TypeAlias = Literal["gelu", "relu"]
+NormType: TypeAlias = Literal["batch", "layer", "none"]
 
 
 class ByteNetBlock(nn.Module):
@@ -179,3 +184,144 @@ class PositionalEmbedding(nn.Module):
         return input_tensor + self.positional_embedding[
             : input_tensor.size(1), :
         ].unsqueeze(0)
+
+
+class TransposeTensor(torch.nn.Module):
+    """
+    ## Transposes a Tensor
+    Used to do the [B, L, C] <-> [B, C, L] transpositions.
+    It was necessary to put this in a module to use in nn.Sequential
+    """
+
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        ## Transpose defined as a torch module
+        """
+        return input_tensor.transpose(1, 2)
+
+
+class DepthwiseSeparableConvolution(nn.Module):
+    """
+    ## Depth-wise Separable 1D Convolution
+    Depth-wise followed by point-wise 1D Convolution.
+    --> Cite MobileNet (Howard et al.)
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        dilation: int = 1,
+        bias: bool = False,
+        norm: NormType = "batch",
+        activation: ActivationType = "gelu",
+    ):
+        super().__init__()
+        # Define Convolutions
+        padding = (kernel_size // 2) * dilation
+        self.depth_wise = nn.Conv1d(
+            in_channels,
+            in_channels,
+            kernel_size=kernel_size,
+            padding=padding,
+            dilation=dilation,
+            groups=in_channels,
+            bias=bias,
+        )
+        self.point_wise = nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=bias)
+
+        # Define Norms
+        if norm == "batch":
+            self.norm = nn.BatchNorm1d(out_channels)
+        elif norm == "layer":
+            self.norm = nn.LayerNorm(out_channels)
+        else:
+            self.norm = None
+
+        self._use_layer_norm = norm == "layer"
+
+        # Define Activations
+        if activation == "gelu":
+            self.activation = nn.GELU()
+        elif activation == "relu":
+            self.activation = nn.ReLU()
+        else:
+            raise ValueError(f"Activation must be 'gelu' or 'relu', not {activation}")
+
+    def forward(self, tensor_input: torch.Tensor) -> torch.Tensor:
+        """
+        ## Forward Pass
+        """
+        tensor_input = self.depth_wise(tensor_input)
+        tensor_input = self.point_wise(tensor_input)
+        if self.norm is not None:
+            if self._use_layer_norm:
+                # Layer Norm requires [B, C, L] -> [B, L, C]
+                tensor_input = tensor_input.transpose(1, 2)
+                tensor_input = self.norm(tensor_input)
+                tensor_input = tensor_input.transpose(1, 2)
+            else:
+                tensor_input = self.norm(tensor_input)
+        tensor_input = self.activation(tensor_input)
+        return tensor_input
+
+
+class UpBlock(nn.Module):
+    """
+    ## UpBlock Module for FAbVAE Decoders
+    Nearest-neighbor upsample by 2x, followed by depth-wise-separable
+    convolution to refine. Lastly, a 1x1 projection to halve channel size.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size_refine: int = 5,
+        kernel_size_project: int = 3,
+        activation: ActivationType = "gelu",
+        norm: NormType = "batch",
+        second_convolution: bool = False,
+    ):
+        super().__init__()
+        # Convolutions
+        self.upsample = nn.Upsample(scale_factor=2, mode="nearest")
+        self.refine = DepthwiseSeparableConvolution(
+            in_channels,
+            in_channels,
+            kernel_size=kernel_size_refine,
+            dilation=1,
+            norm=norm,
+            activation=activation,
+        )
+        self.project = DepthwiseSeparableConvolution(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size_project,
+            dilation=1,
+            norm=norm,
+            activation=activation,
+        )
+        if second_convolution:
+            self.second_convolution = DepthwiseSeparableConvolution(
+                out_channels,
+                out_channels,
+                kernel_size=kernel_size_project,
+                dilation=1,
+                norm=norm,
+                activation=activation,
+            )
+        else:
+            self.second_convolution = None
+
+    def forward(self, tensor_input: torch.Tensor) -> torch.Tensor:
+        """
+        ## Forward Pass
+        """
+        tensor_input = self.upsample(tensor_input)
+        tensor_input = self.refine(tensor_input)
+        tensor_input = self.project(tensor_input)
+        if self.second_convolution is not None:
+            tensor_input = self.second_convolution(tensor_input)
+        return tensor_input
