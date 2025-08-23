@@ -12,17 +12,11 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from fabvae.models.base_model.encoder import AbVAEEncoder
-from fabvae.models.base_model.decoder import AbVAEDecoder
-
 
 class FAbVAEBase(ABC, nn.Module):
     """
     ## Abstract Class of a FAbVAE Model
     """
-
-    encoder: AbVAEEncoder
-    decoder: AbVAEDecoder
 
     def __init__(
         self,

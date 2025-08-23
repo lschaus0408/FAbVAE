@@ -11,196 +11,147 @@ parameters.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-from typing import Tuple, Optional, Literal, Any, Generator, cast
+from typing import Optional, Literal, Any, cast
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
 
 import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
-from torch.multiprocessing.spawn import spawn as torchmp_spawn
+from torch.utils.data import DataLoader
 
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 
 from fabvae.models.base_model.vae import AbVAEBase
-from fabvae.data.load_sequences import MockDataLoader
+from fabvae.models.base_model.base_model import FAbVAEBase
+from fabvae.data.load_sequences import BaseDataLoader, MockDataLoader
 
 ### --------------------------------------------------------###
 #                       Training Utils                        #
 ### --------------------------------------------------------###
 
 
-@contextmanager
-def init_distributed_gpu(rank: int, world_size: int) -> Generator[Any]:
+class VAEModule(pl.LightningModule):
     """
-    ## Initialise default process group for multi-GPU
-    Use Distributed Data Parallel for multi-GPU
-    ### Arguments:
-        \t rank {int} -- GPU identifier number [0, ... world_size -1]
-        \t world_size {int} -- Number of total GPUs
+    ## Lightning Wrapper Around FAbVAE Modules
+    Expects the model to expose:
+        \telbo(batch) -> (loss, recon, kl, beta)\n
+        \tmutable attribute set by Scheduler used during elbo
     """
-    if world_size > 1:
-        dist.init_process_group("nccl", rank=rank, world_size=world_size)
-        torch.cuda.set_device(rank)
-    # Exit gracefully even if the program crashes
-    try:
-        yield
-    finally:
-        if dist.is_initialized():
-            dist.destroy_process_group()
+
+    def __init__(
+        self,
+        model: FAbVAEBase,
+        learning_rate: float = 3e-4,
+        lr_optimizer_factor: float = 0.5,
+        lr_optimizer_patience: int = 10,
+    ):
+        super().__init__()
+        self.save_hyperparameters(ignore=["model"])
+        self.model = model
+        self.learning_rate = learning_rate
+        self.lr_optimizer_factor = lr_optimizer_factor
+        self.lr_optimizer_patience = lr_optimizer_patience
+
+    def forward(  # pylint: disable=arguments-differ
+        self, tensor_input: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        ## Forward Pass
+        """
+        return self.model(tensor_input)
+
+    def training_step(
+        self, batch: torch.Tensor, _: int
+    ):  # pylint: disable=arguments-differ
+        """
+        ## One Training Step of Model
+        """
+        total_loss, reconstruction_loss, kl_loss, beta = self.model.elbo(batch)
+        # Log the average losses
+        self.log("train/loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("train/recon", reconstruction_loss, on_step=False, on_epoch=True)
+        self.log("train/kl", kl_loss, on_step=False, on_epoch=True)
+        self.log("train/beta", beta, on_step=False, on_epoch=True)
+        return total_loss
+
+    def validation_step(
+        self, batch: torch.Tensor, _: int
+    ):  # pylint: disable=arguments-differ
+        """
+        ## One Validation Step of Model
+        """
+        total_loss, reconstruction_loss, kl_loss, beta = self.model.elbo(batch)
+        self.log("val/loss", total_loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("val/recon", reconstruction_loss, on_step=False, on_epoch=True)
+        self.log("val/kl", kl_loss, on_step=False, on_epoch=True)
+        self.log("val/beta", beta, on_step=False, on_epoch=True)
+
+    def configure_optimizers(
+        self,
+    ):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer=optimizer,
+            mode="min",
+            factor=self.lr_optimizer_factor,
+            patience=self.lr_optimizer_patience,
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "monitor": "val/loss",
+                "interval": "epoch",
+                "frequency": 1,
+            },
+        }
 
 
-def cleanup_distributed() -> None:
+class AbVAEDataModule(pl.LightningDataModule):
     """
-    ## Cleanup DDP
+    ## Data Module that Wraps FAbVAE Data Loaders
     """
-    if dist.is_initialized():
-        dist.destroy_process_group()
 
+    train_ds: BaseDataLoader
+    val_ds: BaseDataLoader
 
-def save_checkpoint(state: dict, checkpoint_directory: Path, name: str) -> None:
-    """
-    ## Save Checkpoint States
-    """
-    checkpoint_directory.mkdir(parents=True, exist_ok=True)
-    torch.save(state, checkpoint_directory / name)
+    def __init__(
+        self,
+        train_data_loader: BaseDataLoader,
+        validation_data_loader: BaseDataLoader,
+        batch_size: int,
+        n_workers: int = 4,
+    ):
+        super().__init__()
+        self.train_data_loader = train_data_loader
+        self.validation_data_loader = validation_data_loader
+        self.batch_size = batch_size
+        self.n_workers = n_workers
 
+    def setup(self, stage: Optional[str] = None):
+        """
+        ## Load Data
+        """
+        self.train_ds = self.train_data_loader
+        self.val_ds = self.validation_data_loader
 
-def load_latest_checkpoint(
-    model: AbVAEBase,
-    optimiser: torch.optim.Optimizer,
-    lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
-    kl_scheduler: Scheduler,
-    checkpoint_directory: Path,
-) -> Tuple[int, float]:
-    """
-    ## Load Some Previous Checkpoint
-    If no checkpoint is found, start from the beginning
-    """
-    checkpoint_path = checkpoint_directory / "latest.pt"
-    # Load Checkpoint if it exists
-    if checkpoint_path.is_file():
-        checkpoint: dict[str, Any] = torch.load(checkpoint_path, map_location="cpu")
-        model.load_state_dict(checkpoint["model_state"])
-        optimiser.load_state_dict(checkpoint["optim_state"])
-        kl_scheduler.load_state_dict(checkpoint["kl_sched_state"])
-        lr_scheduler.load_state_dict(checkpoint["sched_state"])
-        return checkpoint["epoch"], checkpoint.get("best_val", float("inf"))
+    def train_dataloader(self) -> Any:
+        return DataLoader(
+            self.train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.n_workers,
+            pin_memory=True,
+        )
 
-    # Start from the beginning
-    return 0, float("inf")
-
-
-### --------------------------------------------------------###
-#                           Training                          #
-### --------------------------------------------------------###
-
-
-def train_one_epoch(
-    model: AbVAEBase,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-) -> tuple[float, float, float, float]:
-    """
-    ## One Epoch Cycle
-    Loads training data to device, performs forward and backwards passes.
-    Updates loss trackers.
-    ### Arguments:
-        model {AbVAEBase} -- The model to be trained \n
-        loader {DataLoader} -- Loads batches onto the model \n
-        optimizer {} -- Optimizer to be used \n
-        device {torch.device} -- Device to train on \n
-
-    ### Returns:
-        \t {tuple}: \n
-            \t total_loss \n
-            \t reconstruction_loss \n
-            \t kl_loss \n
-    """
-    # Setup
-    model.train()
-    total_loss: float = 0.0
-    total_recon: float = 0.0
-    total_kl: float = 0.0
-    total_beta: float = 0.0
-
-    for batch in loader:
-        # Load params
-        batch: torch.Tensor = batch.to(device)
-        optimizer.zero_grad()
-
-        # Train and backprop
-        loss, recon, kl, beta = model.elbo(batch)
-        loss.backward()
-        optimizer.step()
-
-        # Loss registration
-        batch_size = batch.size(0)
-        total_loss += loss.item() * batch_size
-        total_recon += recon.item() * batch_size
-        total_kl += kl.item() * batch_size
-        total_beta += beta.item() * batch_size
-
-    # Average Losses
-    n = len(loader.dataset)
-    average_total = total_loss / n
-    average_recon = total_recon / n
-    average_kl = total_kl / n
-    average_beta = total_beta / n
-
-    return average_total, average_recon, average_kl, average_beta
-
-
-def validate(
-    model: AbVAEBase, loader: DataLoader, device: torch.device
-) -> tuple[float, float, float, float]:
-    """
-    ## Validation Cycle
-    Loads validation data to device, performs forward and backwards passes.
-    Updates loss trackers.
-    ### Arguments:
-        model {AbVAEBase} -- The model to be trained \n
-        loader {DataLoader} -- Loads batches onto the model \n
-        device {torch.device} -- Device to train on \n
-
-    ### Returns:
-        \t {tuple}: \n
-            \t total_loss \n
-            \t reconstruction_loss \n
-            \t kl_loss \n
-    """
-    # Setup
-    model.eval()
-    total_loss = 0.0
-    total_recon = 0.0
-    total_kl = 0.0
-
-    # No grad for validation
-    with torch.no_grad():
-        for batch in loader:
-            # Load params
-            batch = batch.to(device)
-
-            # Get losses
-            loss, recon, kl, beta = model.elbo(batch)
-
-            # Register losses
-            batch_size = batch.size(0)
-            total_loss += loss.item() * batch_size
-            total_recon += recon.item() * batch_size
-            total_kl += kl.item() * batch_size
-            total_beta += beta.item() * batch_size
-
-    # Average losses
-    n = len(loader.dataset)
-    average_loss = total_loss / n
-    average_recon = total_recon / n
-    average_kl = total_kl / n
-    average_beta = total_beta / n
-    return average_loss, average_recon, average_kl, average_beta
+    def val_dataloader(self) -> Any:
+        return DataLoader(
+            self.val_ds,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.n_workers,
+            pin_memory=True,
+        )
 
 
 ### --------------------------------------------------------###
@@ -225,7 +176,9 @@ def training_parser() -> argparse.ArgumentParser:
     parser.add_argument("-b", "--batch_size", type=int)
     parser.add_argument("-n", "--gpus", type=int, default=1, choices=[1, 2, 3, 4])
     parser.add_argument("-r", "--lr", type=float, default=3e-4)
-    parser.add_argument("-c", "--ckpt_dir", type=Optional[str], default=None)
+    parser.add_argument(
+        "-c", "--ckpt_dir", type=Optional[str], default="runs/checkpoints"
+    )
     parser.add_argument("-l", "--log_dir", type=str, default="runs/vae")
     return parser
 
@@ -247,160 +200,53 @@ def main() -> None:
     parser = training_parser()
     args = cast(ArgsTypes, parser.parse_args())
 
-    # Start workers
-    world_size = args.gpus
-    if world_size > 1:
-        torchmp_spawn(worker, args=(world_size, args), nprocs=world_size)
-    else:
-        worker(0, world_size, args)
+    # Setup Lightning
+    core_model = AbVAEBase()
+    lightning_module = VAEModule(core_model, learning_rate=args.lr)
 
+    # KL Scheduler
+    kl_scheduler = KLTargetScheduler(
+        model=core_model,
+        start_kl=0.1,
+        min_kl=0.3,
+        max_kl=1.5,
+        warmup_epochs=5,
+        patience_plateau=4,
+        patience_ramp=3,
+    )
+    kl_callback = KLTargetCallback(kl_scheduler)
 
-def worker(rank: int, world_size: int, args: ArgsTypes):
-    """
-    ## Single worker for training
-    """
-    # Initialize distributor
-    with init_distributed_gpu(rank=rank, world_size=world_size):
-        # Load GPU device
-        device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+    # Data
+    data = AbVAEDataModule(
+        train_data_loader=MockDataLoader(10),
+        validation_data_loader=(10),
+        batch_size=args.batch_size,
+        n_workers=args.gpus,
+    )
 
-        # Data Loading
-        train_ds, val_ds = MockDataLoader(80), MockDataLoader(10)
-        train_sampler = (
-            DistributedSampler(
-                train_ds, num_replicas=world_size, rank=rank, shuffle=True
-            )
-            if world_size > 1
-            else None
-        )
-        val_sampler = (
-            DistributedSampler(
-                val_ds, num_replicas=world_size, rank=rank, shuffle=False
-            )
-            if world_size > 1
-            else None
-        )
+    # Logging
+    logger = TensorBoardLogger(save_dir=args.log_dir, name="FAbVAE")
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=args.ckpt_dir,
+        filename="{epoch:03d}--{val_loss:.3f}",
+        monitor="val/loss",
+        mode="min",
+        save_top_k=1,
+        save_last=True,
+        auto_insert_metric_name=False,
+    )
+    learning_rate_monitor = LearningRateMonitor(logging_interval="epoch")
 
-        train_loader = DataLoader(
-            train_ds,
-            args.batch_size,
-            sampler=train_sampler,
-            shuffle=train_sampler is None,
-            num_workers=4,
-            pin_memory=True,
-        )
-        val_loader = DataLoader(
-            val_ds,
-            args.batch_size,
-            sampler=val_sampler,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=True,
-        )
-
-        # Load Model and cast to device
-        model = AbVAEBase().to(device)
-        print(model)
-        if world_size > 1:
-            model = DDP(model, device_ids=[rank])
-
-        # Setup optimizer and LR Scheduler
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-        lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.5, patience=10
-        )
-
-        # KL Scheduler
-        kl_sched = KLTargetScheduler(
-            model,
-            start_kl=0.1,
-            min_kl=0.3,
-            max_kl=1.0,
-            warmup_epochs=5,
-            patience_plateau=4,
-            patience_ramp=3,
-        )
-
-        # Load checkpoint if it exists
-        if args.ckpt_dir is not None:
-            checkpoint_directory = Path(args.ckpt_dir)
-            start_epoch, best_val = load_latest_checkpoint(
-                model, optimizer, lr_sched, kl_sched, checkpoint_directory
-            )
-        else:
-            start_epoch = 0
-            best_val = float("inf")
-
-        # If this is GPU 0, it is responsible for logging as well
-        if rank == 0:
-            writer = SummaryWriter(args.log_dir)
-        else:
-            writer = None
-
-        # Start training
-        for epoch in range(start_epoch, args.epochs):
-            if train_loader.sampler and isinstance(
-                train_loader.sampler, DistributedSampler
-            ):
-                train_loader.sampler.set_epoch(epoch)
-
-            # One pass of training
-            training_loss, training_recon, training_kl, training_beta = train_one_epoch(
-                model, train_loader, optimizer, device
-            )
-            validation_loss, validation_recon, validation_kl, validation_beta = (
-                validate(model, val_loader, device)
-            )
-
-            lr_sched.step(validation_loss)
-            kl_sched.step(epoch, validation_recon)
-
-            # Write the metrics to stdout if GPU 0
-            if rank == 0:
-                lr = optimizer.param_groups[0]["lr"]
-                print(
-                    f"Ep {epoch:03d} | LR {lr:.2e} | β {validation_beta:.3f} \
-                    | tr {training_loss:.3f} | val {validation_loss:.3f}"
-                )
-                if writer:
-                    writer.add_scalars(
-                        "Loss", {"train": training_loss, "val": validation_loss}, epoch
-                    )
-                    writer.add_scalars(
-                        "Recon",
-                        {"train": training_recon, "val": validation_recon},
-                        epoch,
-                    )
-                    writer.add_scalars(
-                        "KL", {"train": training_kl, "val": validation_kl}, epoch
-                    )
-                    writer.add_scalars(
-                        "beta", {"train": training_beta, "val": validation_beta}, epoch
-                    )
-                    writer.add_scalar("lr", lr, epoch)
-
-            # Update the user on Optimizer, KL and LR states
-            if rank == 0 and (epoch % 5 == 0 or validation_loss < best_val):
-                best_val = min(best_val, validation_loss)
-                state = {
-                    "epoch": epoch + 1,
-                    "model_state": (
-                        model.module.state_dict()
-                        if isinstance(model, DDP)
-                        else model.state_dict()
-                    ),
-                    "optim_state": optimizer.state_dict(),
-                    "sched_state": lr_sched.state_dict(),
-                    "kl_sched_state": kl_sched.state_dict(),
-                    "best_val": best_val,
-                }
-                save_checkpoint(state, checkpoint_directory, "latest.pt")
-                if validation_loss <= best_val:
-                    save_checkpoint(state, checkpoint_directory, "best.pt")
-
-        # Cleanup
-        if writer:
-            writer.close()
+    # Trainer
+    trainer = pl.Trainer(
+        max_epochs=args.epochs,
+        accelerator="gpu" if torch.cuda.is_available() and args.gpus > 0 else "cpu",
+        devices=args.gpus if torch.cuda.is_available() and args.gpus > 0 else 1,
+        logger=logger,
+        callbacks=[checkpoint_callback, learning_rate_monitor, kl_callback],
+        log_every_n_steps=10,
+    )
+    trainer.fit(model=lightning_module, datamodule=data)
 
 
 ### --------------------------------------------------------###
@@ -568,6 +414,45 @@ class KLTargetScheduler(Scheduler):
         self.no_improvement = state["no_improve"]
         self.current_phase = state["phase"]
         self.model.kl_target = state["kl_target"]
+
+
+class KLTargetCallback(pl.Callback):
+    """
+    ## Integrates KLScheduler with Lightning
+    """
+
+    def __init__(self, scheduler: KLTargetScheduler):
+        super().__init__()
+        self.scheduler = scheduler
+
+    def on_validation_epoch_end(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        epoch = trainer.current_epoch
+        # Get metrics
+        metrics = trainer.callback_metrics
+        # Log val reconstruction loss in validation_step
+        if "val/recon" in metrics:
+            val_recon = float(metrics["val/recon"])
+            self.scheduler.step(epoch, val_recon)
+
+    def on_save_checkpoint(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        checkpoint: dict[str, Any],
+    ) -> None:
+        checkpoint["kl_sched_state"] = self.scheduler.state_dict()
+
+    def on_load_checkpoint(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        checkpoint: dict[str, Any],
+    ) -> None:
+        state = checkpoint.get("kl_sched_state")
+        if state is not None:
+            self.scheduler.load_state_dict(state)
 
 
 ### --------------------------------------------------------###
