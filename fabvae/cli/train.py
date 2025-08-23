@@ -154,6 +154,47 @@ class AbVAEDataModule(pl.LightningDataModule):
         )
 
 
+class EpochSummaryPrinter(pl.Callback):
+    """
+    ## Prints Summary of Metrics from Epoch
+    """
+
+    def _get(self, metrics, key):
+        return (
+            metrics.get(key)
+            or metrics.get(f"{key}_epoch")
+            or metrics.get(f"{key}/epoch")
+        )
+
+    def on_validation_epoch_end(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        metrics = trainer.callback_metrics
+
+        def func(x):
+            return float(x) if x is not None else float("nan")
+
+        tl = func(self._get(metrics, "train/loss"))
+        tr = func(self._get(metrics, "train/recon"))
+        tk = func(self._get(metrics, "train/kl"))
+        tb = func(self._get(metrics, "train/beta"))
+        vl = func(self._get(metrics, "val/loss"))
+        vr = func(self._get(metrics, "val/recon"))
+        vk = func(self._get(metrics, "val/kl"))
+        vb = func(self._get(metrics, "val/beta"))
+        print(
+            "\n"
+            "-------------------------------------"
+            "\n"
+            f"Epoch {trainer.current_epoch:03d} | "
+            f"train: loss={tl:.3f} reconstruction={tr:.3f} kl={tk:.3f} beta={tb:.3f} | "
+            f"val: loss={vl:.3f} reconstruction={vr:.3f} kl={vk:.3f} beta={vb:.3f}"
+            "\n"
+            "-------------------------------------"
+            "\n"
+        )
+
+
 ### --------------------------------------------------------###
 #                            Main                             #
 ### --------------------------------------------------------###
@@ -176,9 +217,7 @@ def training_parser() -> argparse.ArgumentParser:
     parser.add_argument("-b", "--batch_size", type=int)
     parser.add_argument("-n", "--gpus", type=int, default=1, choices=[1, 2, 3, 4])
     parser.add_argument("-r", "--lr", type=float, default=3e-4)
-    parser.add_argument(
-        "-c", "--ckpt_dir", type=Optional[str], default="runs/checkpoints"
-    )
+    parser.add_argument("-c", "--ckpt_dir", type=Optional[str], default=None)
     parser.add_argument("-l", "--log_dir", type=str, default="runs/vae")
     return parser
 
@@ -202,6 +241,7 @@ def main() -> None:
 
     # Setup Lightning
     core_model = AbVAEBase()
+    print(core_model)
     lightning_module = VAEModule(core_model, learning_rate=args.lr)
 
     # KL Scheduler
@@ -218,8 +258,8 @@ def main() -> None:
 
     # Data
     data = AbVAEDataModule(
-        train_data_loader=MockDataLoader(10),
-        validation_data_loader=(10),
+        train_data_loader=MockDataLoader(100),
+        validation_data_loader=MockDataLoader(80),
         batch_size=args.batch_size,
         n_workers=args.gpus,
     )
@@ -243,7 +283,12 @@ def main() -> None:
         accelerator="gpu" if torch.cuda.is_available() and args.gpus > 0 else "cpu",
         devices=args.gpus if torch.cuda.is_available() and args.gpus > 0 else 1,
         logger=logger,
-        callbacks=[checkpoint_callback, learning_rate_monitor, kl_callback],
+        callbacks=[
+            checkpoint_callback,
+            learning_rate_monitor,
+            kl_callback,
+            EpochSummaryPrinter(),
+        ],
         log_every_n_steps=10,
     )
     trainer.fit(model=lightning_module, datamodule=data)
