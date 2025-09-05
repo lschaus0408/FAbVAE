@@ -23,7 +23,11 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 
 from fabvae.models.base_model.vae import AbVAEBase
 from fabvae.models.base_model.base_model import FAbVAEBase
-from fabvae.data.load_sequences import BaseDataLoader, MockDataLoader
+from fabvae.data.load_sequences import (
+    BaseDataLoader,
+    ProteinSequenceLoader,
+    one_hot_tokenizer,
+)
 
 ### --------------------------------------------------------###
 #                       Training Utils                        #
@@ -213,12 +217,37 @@ def training_parser() -> argparse.ArgumentParser:
         \t --log_dir (-l): Where to log data
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("-e", "--epochs", type=int)
-    parser.add_argument("-b", "--batch_size", type=int)
-    parser.add_argument("-n", "--gpus", type=int, default=1, choices=[1, 2, 3, 4])
-    parser.add_argument("-r", "--lr", type=float, default=3e-4)
-    parser.add_argument("-c", "--ckpt_dir", type=Optional[str], default=None)
-    parser.add_argument("-l", "--log_dir", type=str, default="runs/vae")
+    parser.add_argument("-e", "--epochs", type=int, help="Number of epochs")
+    parser.add_argument("-b", "--batch_size", type=int, help="Batch size")
+    parser.add_argument("-t", "--train_data", type=str, help="Path to training data")
+    parser.add_argument(
+        "-v", "--validation_data", type=str, help="Path to validation data"
+    )
+    parser.add_argument(
+        "-n",
+        "--gpus",
+        type=int,
+        default=1,
+        choices=[1, 2, 3, 4],
+        help="Number of GPUs to use",
+    )
+    parser.add_argument(
+        "-r", "--lr", type=float, default=3e-4, help="Starting learning rate"
+    )
+    parser.add_argument(
+        "-c",
+        "--ckpt_dir",
+        type=Optional[str],
+        default=None,
+        help="Path to where checkpoints are saved",
+    )
+    parser.add_argument(
+        "-l",
+        "--log_dir",
+        type=str,
+        default="runs/vae",
+        help="Path to where logs are saved",
+    )
     return parser
 
 
@@ -257,9 +286,19 @@ def main() -> None:
     kl_callback = KLTargetCallback(kl_scheduler)
 
     # Data
+    training_data = ProteinSequenceLoader(
+        directory=args.train_data,
+        subsample=1000,
+        tokeniser=one_hot_tokenizer(sequence_length=140),
+    )
+    validation_data = ProteinSequenceLoader(
+        directory=args.validation_data,
+        subsample=200,
+        tokeniser=one_hot_tokenizer(sequence_length=140),
+    )
     data = AbVAEDataModule(
-        train_data_loader=MockDataLoader(100),
-        validation_data_loader=MockDataLoader(80),
+        train_data_loader=training_data,
+        validation_data_loader=validation_data,
         batch_size=args.batch_size,
         n_workers=args.gpus,
     )
@@ -516,6 +555,8 @@ class ArgsTypes(argparse.Namespace):
     lr: float
     ckpt_dir: str
     log_dir: str
+    train_data: str
+    validation_data: str
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Literal, Optional, Callable, TypeAlias
 
 import torch
+import torch.nn.functional as Functionals
 
 import pandas as pd
 import numpy as np
@@ -25,6 +26,11 @@ import numpy as np
 from torch.utils.data import Dataset
 
 TokenizerType: TypeAlias = Optional[Callable[[str], torch.Tensor]]
+
+CANONICAL_AA: dict[str, int] = {
+    aa: index for index, aa in enumerate("ACDEFGHIKLMNPQRSTVWY")
+}
+NUM_AA: int = len(CANONICAL_AA)
 
 
 class BaseDataLoader(Dataset):
@@ -106,6 +112,7 @@ class ProteinSequenceLoader(BaseDataLoader):
         pattern: str = "*.csv",
         sequence_column: str = "Sequence_aa",
         tokeniser: Optional[Callable[[str], torch.Tensor]] = None,
+        subsample: Optional[int] = None,
     ) -> None:
         super().__init__(tokeniser)
 
@@ -122,6 +129,9 @@ class ProteinSequenceLoader(BaseDataLoader):
             if sequence_column not in df:
                 raise KeyError(f"{sequence_column} column missing in {file}")
             self.sequences.extend(df[sequence_column].astype(str).tolist())
+
+        if subsample is not None:
+            self.sequences = np.random.choice(a=self.sequences, size=subsample).tolist()
 
     def __len__(self):
         return len(self.sequences)
@@ -174,3 +184,46 @@ class ProteinEmbeddingLoader(Dataset):
 
     def __getitem__(self, idx):
         self.tensors[idx]  # pylint: disable=pointless-statement
+
+
+def one_hot_tokenizer(
+    sequence_length: int,
+    aa_to_index: dict[str, int] = CANONICAL_AA,
+    pad_index: int = NUM_AA,
+    dtype: torch.dtype = torch.float32,
+    device: Optional[torch.device] = None,
+) -> Callable[[str], torch.Tensor]:
+    """
+    ## One Hot Tokenizer
+    One-hot encodes amino acid sequences with padding.
+    ### Arguments:
+        \tsequence_length {int} -- Maximum sequence length for tokenizer \n
+        \taa_to_index {dict} -- Dict determining what single-letter AA code maps to what index \n
+        \tpad_index {int} -- At what index is the pad token inserted \n
+        \tdtype {dtype} -- Type for the output tensor\n
+    ### Returns:
+        \t Callable -- Callable that maps str -> torch.Tensor
+    """
+    number_of_channels = len(aa_to_index) + 1
+    if pad_index >= number_of_channels:
+        raise ValueError("Pad index must be within len(AA) + 1")
+
+    def tokenize(sequence: str) -> torch.Tensor:
+        """
+        ## Performs the tokenization
+        """
+        if len(sequence) > sequence_length:
+            raise ValueError(
+                f"Input sequence length {len(sequence)} > sequence_length = {sequence_length}"
+            )
+
+        # Convert str -> list[int]
+        indices = [aa_to_index.get(channel, pad_index) for channel in sequence]
+        indices = torch.tensor(indices, dtype=torch.long, device=device)
+
+        one_hot = Functionals.one_hot(  # pylint: disable=not-callable
+            indices, num_classes=number_of_channels
+        ).to(dtype=dtype)
+        return one_hot
+
+    return tokenize
