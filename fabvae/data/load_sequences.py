@@ -15,21 +15,17 @@ loaders:
 
 import pickle
 from pathlib import Path
-from typing import Literal, Optional, Callable, TypeAlias
+from typing import Callable, Literal, Optional, TypeAlias
 
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as Functionals
-
-import pandas as pd
-import numpy as np
-
 from torch.utils.data import Dataset
 
 TokenizerType: TypeAlias = Optional[Callable[[str], torch.Tensor]]
 
-CANONICAL_AA: dict[str, int] = {
-    aa: index for index, aa in enumerate("ACDEFGHIKLMNPQRSTVWY")
-}
+CANONICAL_AA: dict[str, int] = {aa: index for index, aa in enumerate("ACDEFGHIKLMNPQRSTVWY")}
 NUM_AA: int = len(CANONICAL_AA)
 
 
@@ -94,9 +90,7 @@ class MockDataLoader(BaseDataLoader):
                 0, 100, (self.sequence_length, self.features_length), dtype=torch.int32
             )
         if self.dtype == "float":
-            return torch.rand(
-                self.sequence_length, self.features_length, dtype=torch.float32
-            )
+            return torch.rand(self.sequence_length, self.features_length, dtype=torch.float32)
         raise ValueError(f"dtype {self.dtype} not recognized.")
 
 
@@ -115,6 +109,7 @@ class ProteinSequenceLoader(BaseDataLoader):
         subsample: Optional[int] = None,
     ) -> None:
         super().__init__(tokeniser)
+        directory = Path(directory)
 
         # Get list of files
         self.files: list[Path] = sorted(directory.glob(pattern))
@@ -150,7 +145,6 @@ class ProteinEmbeddingLoader(Dataset):
         directory: Path,
         pattern: Literal["*.pt", "*.npy", "*.npz", "*.pkl"] = "*.pt",
     ) -> None:
-
         # Load files
         self.paths = sorted(directory.glob(pattern))
         if not self.paths:

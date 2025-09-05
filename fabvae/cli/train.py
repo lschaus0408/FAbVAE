@@ -10,24 +10,28 @@ parameters.
 
 from __future__ import annotations
 
-import argparse
-from typing import Optional, Literal, Any, cast
-from abc import ABC, abstractmethod
+import multiprocessing
 
-import torch
-from torch.utils.data import DataLoader
+multiprocessing.set_start_method("spawn", force=True)
+
+
+import argparse
+from abc import ABC, abstractmethod
+from typing import Any, Literal, Optional, cast
 
 import pytorch_lightning as pl
+import torch
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from torch.utils.data import DataLoader
 
-from fabvae.models.base_model.vae import AbVAEBase
-from fabvae.models.base_model.base_model import FAbVAEBase
 from fabvae.data.load_sequences import (
     BaseDataLoader,
     ProteinSequenceLoader,
     one_hot_tokenizer,
 )
+from fabvae.models.base_model.base_model import FAbVAEBase
+from fabvae.models.base_model.vae import AbVAEBase
 
 ### --------------------------------------------------------###
 #                       Training Utils                        #
@@ -64,9 +68,7 @@ class VAEModule(pl.LightningModule):
         """
         return self.model(tensor_input)
 
-    def training_step(
-        self, batch: torch.Tensor, _: int
-    ):  # pylint: disable=arguments-differ
+    def training_step(self, batch: torch.Tensor, _: int):  # pylint: disable=arguments-differ
         """
         ## One Training Step of Model
         """
@@ -78,9 +80,7 @@ class VAEModule(pl.LightningModule):
         self.log("train/beta", beta, on_step=False, on_epoch=True)
         return total_loss
 
-    def validation_step(
-        self, batch: torch.Tensor, _: int
-    ):  # pylint: disable=arguments-differ
+    def validation_step(self, batch: torch.Tensor, _: int):  # pylint: disable=arguments-differ
         """
         ## One Validation Step of Model
         """
@@ -146,6 +146,7 @@ class AbVAEDataModule(pl.LightningDataModule):
             shuffle=True,
             num_workers=self.n_workers,
             pin_memory=True,
+            persistent_workers=True
         )
 
     def val_dataloader(self) -> Any:
@@ -155,6 +156,7 @@ class AbVAEDataModule(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.n_workers,
             pin_memory=True,
+            persistent_workers=True
         )
 
 
@@ -164,15 +166,9 @@ class EpochSummaryPrinter(pl.Callback):
     """
 
     def _get(self, metrics, key):
-        return (
-            metrics.get(key)
-            or metrics.get(f"{key}_epoch")
-            or metrics.get(f"{key}/epoch")
-        )
+        return metrics.get(key) or metrics.get(f"{key}_epoch") or metrics.get(f"{key}/epoch")
 
-    def on_validation_epoch_end(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule
-    ) -> None:
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         metrics = trainer.callback_metrics
 
         def func(x):
@@ -220,9 +216,7 @@ def training_parser() -> argparse.ArgumentParser:
     parser.add_argument("-e", "--epochs", type=int, help="Number of epochs")
     parser.add_argument("-b", "--batch_size", type=int, help="Batch size")
     parser.add_argument("-t", "--train_data", type=str, help="Path to training data")
-    parser.add_argument(
-        "-v", "--validation_data", type=str, help="Path to validation data"
-    )
+    parser.add_argument("-v", "--validation_data", type=str, help="Path to validation data")
     parser.add_argument(
         "-n",
         "--gpus",
@@ -231,9 +225,7 @@ def training_parser() -> argparse.ArgumentParser:
         choices=[1, 2, 3, 4],
         help="Number of GPUs to use",
     )
-    parser.add_argument(
-        "-r", "--lr", type=float, default=3e-4, help="Starting learning rate"
-    )
+    parser.add_argument("-r", "--lr", type=float, default=3e-4, help="Starting learning rate")
     parser.add_argument(
         "-c",
         "--ckpt_dir",
@@ -264,12 +256,17 @@ def main() -> None:
         \t --log_dir (-l): Where to log data
     """
 
+    # Device
+    device = (
+        torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
+    )
+
     # Argparse
     parser = training_parser()
     args = cast(ArgsTypes, parser.parse_args())
 
     # Setup Lightning
-    core_model = AbVAEBase()
+    core_model = AbVAEBase().to(device)
     print(core_model)
     lightning_module = VAEModule(core_model, learning_rate=args.lr)
 
@@ -289,12 +286,12 @@ def main() -> None:
     training_data = ProteinSequenceLoader(
         directory=args.train_data,
         subsample=1000,
-        tokeniser=one_hot_tokenizer(sequence_length=140),
+        tokeniser=one_hot_tokenizer(sequence_length=140, device=device),
     )
     validation_data = ProteinSequenceLoader(
         directory=args.validation_data,
         subsample=200,
-        tokeniser=one_hot_tokenizer(sequence_length=140),
+        tokeniser=one_hot_tokenizer(sequence_length=140, device=device),
     )
     data = AbVAEDataModule(
         train_data_loader=training_data,
@@ -426,9 +423,7 @@ class KLTargetScheduler(Scheduler):
             # Ramp during warmup
             if epoch < self.warmup_epochs:
                 progress = epoch / max(1, self.warmup_epochs - 1)
-                self.model.kl_target = self.start_kl + progress * (
-                    self.min_kl - self.start_kl
-                )
+                self.model.kl_target = self.start_kl + progress * (self.min_kl - self.start_kl)
                 return
             # Exit warmup phase
             elif epoch >= self.warmup_epochs:
@@ -440,7 +435,6 @@ class KLTargetScheduler(Scheduler):
 
         # Plateau block
         if self.current_phase == "plateau":
-
             self.check_improvement(reconstruction_loss=loss)
 
             # Change phase if there is no improvement
@@ -509,9 +503,7 @@ class KLTargetCallback(pl.Callback):
         super().__init__()
         self.scheduler = scheduler
 
-    def on_validation_epoch_end(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule
-    ) -> None:
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         epoch = trainer.current_epoch
         # Get metrics
         metrics = trainer.callback_metrics

@@ -17,6 +17,7 @@ Model Overview:
 from __future__ import annotations
 
 import math
+
 import torch
 import torch.nn as nn
 
@@ -49,7 +50,7 @@ class AbVAEEncoder(nn.Module):
         self.use_bottleneck = use_bottleneck
 
         # 1d conv to move from one‑hot into feature space
-        self.input_projection = nn.Conv1d(in_channels, base_channels, kernel_size=1)
+        self.input_projection = nn.Conv1d(in_channels, base_channels, kernel_size=1).to("cuda")
 
         # Positional Embedding
         if positional_embedding:
@@ -145,9 +146,9 @@ class AbVAEEncoder(nn.Module):
         _, sequence_length, __ = (
             input_tensor.shape
         )  # (B = batch_size, L = sequence_length, C = channels_in)
-        assert (
-            sequence_length == self.sequence_length
-        ), f"expected sequence length {self.sequence_length}, got {sequence_length}"
+        assert sequence_length == self.sequence_length, (
+            f"expected sequence length {self.sequence_length}, got {sequence_length}"
+        )
 
         # Set positional embedding
         input_tensor = self.pos_embed(input_tensor)
